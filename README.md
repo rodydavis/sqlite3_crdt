@@ -46,7 +46,7 @@ SELECT hlc_now(uuid());
 Create a new crdt table.
 
 ```sql
-SELECT crdt_create('table_name', uuid());
+SELECT crdt_create_table('table_name', uuid());
 ```
 
     The `uuid()` would be a static node_id you would generate once per client.
@@ -54,7 +54,7 @@ SELECT crdt_create('table_name', uuid());
 The table that get created is a virtual table but has INSTEAD OF triggers to handle CRUD operations.
 
 ```sql
-SELECT crdt_create('people', uuid());
+SELECT crdt_create_table('people', uuid());
 
 INSERT INTO people (id, data, hlc)
 VALUES ('1', '{"name": "Rody Davis"}', hlc_now('3afeb0e0-d9a6-424b-b60d-af86c06a4799'));
@@ -69,13 +69,31 @@ SELECT * FROM people;
 DELETE FROM people WHERE id = '1';
 ```
 
+To delete the a table you need to call `crdt_remove_table`.
+
+```sql
+SELECT crdt_remove_table('people');
+```
+
+To delete the core crdt tables you need to call `crdt_remove`. You will need to call `crdt_remove_table` for each table before calling this.
+
+```sql
+SELECT crdt_remove();
+```
+
+To call the setup again you will need to call `crdt_init`. This is need to create the core tables again.
+
+```sql
+SELECT crdt_init();
+```
+
     If the data is NULL it is considered a tombstone and will be removed from the CRDT.
 
 #### Get CRDT Changes
 
 ```sql
 SELECT * FROM crdt_changes
-WHERE table_name = 'people';
+WHERE tbl = 'people';
 ```
 
 ### Overriding Operations
