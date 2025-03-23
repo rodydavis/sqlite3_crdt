@@ -2,9 +2,9 @@
 
 This repo contains a set of extensions meant to be used together with SQLite to implement CRDTs. The extensions are written in C and are loaded into SQLite as dynamic libraries.
 
-- uuid.c (comes from official SQLite3 source code)
-- hlc.c (HLC implementation)
-- crdt.c (CRDT implementation)
+- uuid.c (comes from official [SQLite3 source code](https://sqlite.org/src/file/ext/misc/uuid.c))
+- hlc.c ([HLC implementation](https://cse.buffalo.edu/tech-reports/2014-04.pdf))
+- crdt.c ([CRDT implementation](https://www.dotconferences.com/2019/12/james-long-crdts-for-mortals))
 
 ## Building
 
