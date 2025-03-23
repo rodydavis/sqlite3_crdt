@@ -100,14 +100,14 @@ WHERE id = '1'
 ```
 
 The following operators are supported:
-- + (addition)
-- - (subtraction)
-- * (multiplication)
-- / (division)
-- % (modulus)
-- & (bitwise AND)
-- | (bitwise OR)
-- || (concatenation)
+- `+` (addition)
+- `-` (subtraction)
+- `*` (multiplication)
+- `/` (division)
+- `%` (modulus)
+- `&` (bitwise AND)
+- `|` (bitwise OR)
+- `||` (concatenation)
 
 For the path it needs to be a valid [JSON path](https://www.sqlite.org/json1.html) used in the functions.
 
