@@ -100,6 +100,7 @@ WHERE id = '1'
 ```
 
 The following operators are supported:
+- `=` (assignment)
 - `+` (addition)
 - `-` (subtraction)
 - `*` (multiplication)
@@ -108,6 +109,10 @@ The following operators are supported:
 - `&` (bitwise AND)
 - `|` (bitwise OR)
 - `||` (concatenation)
+- `patch` ([json_patch](https://www.sqlite.org/json1.html#jpatch))
+- `remove` ([json_remove](https://www.sqlite.org/json1.html#jrm))
+- `replace` ([json_replace](https://www.sqlite.org/json1.html#jrepl))
+- `set` ([json_set](https://www.sqlite.org/json1.html#jset))
 
 For the path it needs to be a valid [JSON path](https://www.sqlite.org/json1.html) used in the functions.
 
