@@ -1,0 +1,4 @@
+*.dylib.dSYM/
+*.dylib
+vendor/
+sqlite3
