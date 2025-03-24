@@ -2,3 +2,4 @@
 *.dylib
 vendor/
 sqlite3
+*.sql

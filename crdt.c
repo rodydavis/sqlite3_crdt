@@ -13,7 +13,20 @@ SQLITE_EXTENSION_INIT1
 
 int sqlite3_crdt_setup(sqlite3 *db, char **pzErrMsg) {
     char *err_msg = NULL;
-    char table_sql[] = "CREATE TABLE IF NOT EXISTS crdt_records (id NOT NULL DEFAULT (hlc_now(uuid())), tbl TEXT NOT NULL, data BLOB, deleted BOOLEAN AS (data IS NULL), hlc TEXT NOT NULL, node_id TEXT NOT NULL AS (hlc_node_id(hlc)), PRIMARY KEY (id, tbl)); CREATE TABLE IF NOT EXISTS crdt_changes (id NOT NULL PRIMARY KEY DEFAULT (hlc_now(uuid())), pk TEXT NOT NULL, tbl TEXT NOT NULL, data BLOB, path TEXT NOT NULL DEFAULT ('$'), op TEXT NOT NULL DEFAULT ('='), deleted BOOLEAN AS (data IS NULL), hlc TEXT NOT NULL, node_id TEXT NOT NULL AS (hlc_node_id(hlc))); CREATE TRIGGER IF NOT EXISTS crdt_changes_after_insert AFTER INSERT ON crdt_changes FOR EACH ROW BEGIN INSERT INTO crdt_records (id, tbl, data, hlc) VALUES (NEW.pk, NEW.tbl, jsonb(NEW.data), NEW.hlc) ON CONFLICT (id, tbl) DO UPDATE SET data = (CASE WHEN NEW.deleted THEN NULL WHEN NEW.op = 'set' THEN jsonb_set(data, NEW.path, excluded.data) WHEN NEW.op = 'insert' THEN jsonb_insert(data, NEW.path, excluded.data) WHEN NEW.op = 'patch' THEN jsonb_patch(data, excluded.data) WHEN NEW.op = 'remove' THEN jsonb_remove(data, NEW.path) WHEN NEW.op = 'replace' THEN jsonb_replace(data, NEW.path, excluded.data) WHEN NEW.op = '=' THEN jsonb_set(data, NEW.path, excluded.data) WHEN NEW.op = '+' THEN jsonb_set(data, NEW.path, jsonb(jsonb_extract(data, NEW.path) + jsonb_extract(excluded.data, '$'))) WHEN NEW.op = '-' THEN jsonb_set(data, NEW.path, jsonb(jsonb_extract(data, NEW.path) - jsonb_extract(excluded.data, '$'))) WHEN NEW.op = '*' THEN jsonb_set(data, NEW.path, jsonb(jsonb_extract(data, NEW.path) * jsonb_extract(excluded.data, '$'))) WHEN NEW.op = '/' THEN jsonb_set(data, NEW.path, jsonb(jsonb_extract(data, NEW.path) / jsonb_extract(excluded.data, '$'))) WHEN NEW.op = '%' THEN jsonb_set(data, NEW.path, jsonb(jsonb_extract(data, NEW.path) % jsonb_extract(excluded.data, '$'))) WHEN NEW.op = '&' THEN jsonb_set(data, NEW.path, jsonb(jsonb_extract(data, NEW.path) & jsonb_extract(excluded.data, '$'))) WHEN NEW.op = '|' THEN jsonb_set(data, NEW.path, jsonb(jsonb_extract(data, NEW.path) | jsonb_extract(excluded.data, '$'))) WHEN NEW.op = '||' THEN jsonb_set(data, NEW.path, jsonb(jsonb_extract(data, NEW.path) || jsonb_extract(excluded.data, '$'))) END), hlc = NEW.hlc WHERE id = NEW.pk AND tbl = NEW.tbl AND hlc_compare(NEW.hlc, hlc) > 0; END;";
+    
+    char table_sql[] =  
+    "CREATE TABLE IF NOT EXISTS crdt_changes ( "
+    "    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "
+    "    pk TEXT NOT NULL, "
+    "    tbl TEXT NOT NULL, "
+    "    data BLOB, "
+    "    path TEXT NOT NULL DEFAULT ('$'), "
+    "    op TEXT NOT NULL DEFAULT ('='), "
+    "    deleted BOOLEAN AS (data IS NULL), "
+    "    hlc TEXT NOT NULL, "
+    "    json AS (data -> '$'), "
+    "    node_id TEXT NOT NULL AS (hlc_node_id(hlc)) "
+    "); ";
 
     if (sqlite3_exec(db, table_sql, NULL, NULL, &err_msg) != SQLITE_OK) {
         if (pzErrMsg) {
@@ -39,52 +52,260 @@ static void crdt_create(sqlite3_context *context, int argc, sqlite3_value **argv
         return;
     }
 
-    char view_sql[512];
-    snprintf(view_sql, sizeof(view_sql), "CREATE VIEW %s AS SELECT *, '=' AS op, '$' AS path, json_extract(data, '$') AS json FROM crdt_records WHERE tbl = '%s' AND deleted = FALSE;", tbl, tbl);
+    char table_sql[] =
+    "CREATE TABLE IF NOT EXISTS %s_records ( \n"
+    "    id TEXT NOT NULL PRIMARY KEY DEFAULT (hlc_now('%s')), \n"
+    "    data BLOB, \n"
+    "    deleted BOOLEAN AS (data IS NULL), \n"
+    "    hlc TEXT NOT NULL, \n"
+    "    path TEXT DEFAULT ('$'), \n"
+    "    op TEXT DEFAULT ('='), \n"
+    "    json AS (data -> '$'), \n"
+    "    node_id TEXT NOT NULL AS (hlc_node_id(hlc)) \n"
+    "); \n"
+    " \n"
+    "CREATE VIEW %s AS \n"
+    "SELECT * \n"
+    "FROM %s_records; \n"
+    " \n"
+    "CREATE TRIGGER IF NOT EXISTS %s_insert \n"
+    "INSTEAD OF INSERT ON %s \n"
+    "BEGIN \n"
+    "    INSERT INTO crdt_changes \n"
+    "    (pk, tbl, data, op, path, hlc) \n"
+    "    VALUES \n"
+    "    ( \n"
+    "        NEW.id, \n"
+    "        '%s', \n"
+    "        jsonb(NEW.data), \n"
+    "        IFNULL(NEW.op, '='), \n"
+    "        IFNULL(NEW.path, '$'), \n"
+    "        NEW.hlc \n"
+    "    ); \n"
+    "    INSERT INTO %s_records \n"
+    "    (id, data, hlc, op, path) \n"
+    "    VALUES \n"
+    "    ( \n"
+    "        NEW.id, \n"
+    "        jsonb(NEW.data), \n"
+    "        NEW.hlc, \n"
+    "        IFNULL(NEW.op, '='), \n"
+    "        IFNULL(NEW.path, '$') \n"
+    "    ) ON CONFLICT (id) DO UPDATE SET \n"
+    "        data = ( \n"
+    "          CASE \n"
+    "              WHEN NEW.deleted THEN NULL \n"
+    "              WHEN excluded.op = 'set' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  excluded.data \n"
+    "              ) \n"
+    "              WHEN excluded.op = 'insert' THEN jsonb_insert( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  excluded.data \n"
+    "              ) \n"
+    "              WHEN excluded.op = 'patch' THEN jsonb_patch( \n"
+    "                  data, \n"
+    "                  excluded.data \n"
+    "              ) \n"
+    "              WHEN excluded.op = 'remove' THEN jsonb_remove( \n"
+    "                  data, \n"
+    "                  NEW.path \n"
+    "              ) \n"
+    "              WHEN excluded.op = 'replace' THEN jsonb_replace( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  excluded.data \n"
+    "              ) \n"
+    "              WHEN excluded.op = '=' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  excluded.data \n"
+    "              ) \n"
+    "              WHEN excluded.op = '+' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) + jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '-' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) - jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '*' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) * jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '/' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) / jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '%%' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) %% jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '&' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) & jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '|' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) | jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '||' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) || jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "          END \n"
+    "        ), \n"
+    "        hlc = NEW.hlc, \n"
+    "        path = IFNULL(NEW.path, '$'), \n"
+    "        op = IFNULL(NEW.op, '=') \n"
+    "    WHERE hlc_compare(NEW.hlc, hlc) > 0; \n"
+    "END; \n"
+    " \n"
+    "CREATE TRIGGER IF NOT EXISTS %s_update \n"
+    "INSTEAD OF UPDATE ON %s \n"
+    "BEGIN \n"
+    "    INSERT INTO crdt_changes \n"
+    "    (pk, tbl, data, op, path, hlc) \n"
+    "    VALUES \n"
+    "    ( \n"
+    "        NEW.id, \n"
+    "        '%s', \n"
+    "        jsonb(NEW.data), \n"
+    "        IFNULL(NEW.op, 'patch'), \n"
+    "        IFNULL(NEW.path, '$'), \n"
+    "        NEW.hlc \n"
+    "    ); \n"
+    "    INSERT INTO %s_records \n"
+    "    (id, data, op, path, hlc) \n"
+    "    VALUES \n"
+    "    ( \n"
+    "        NEW.id, \n"
+    "        jsonb(NEW.data), \n"
+    "        IFNULL(NEW.op, 'patch'), \n"
+    "        IFNULL(NEW.path, '$'), \n"
+    "        NEW.hlc \n"
+    "    ) ON CONFLICT (id) DO UPDATE SET \n"
+    "        data = ( \n"
+    "          CASE \n"
+    "              WHEN NEW.deleted THEN NULL \n"
+    "              WHEN excluded.op = 'set' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  excluded.data \n"
+    "              ) \n"
+    "              WHEN excluded.op = 'insert' THEN jsonb_insert( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  excluded.data \n"
+    "              ) \n"
+    "              WHEN excluded.op = 'patch' THEN jsonb_patch( \n"
+    "                  data, \n"
+    "                  excluded.data \n"
+    "              ) \n"
+    "              WHEN excluded.op = 'remove' THEN jsonb_remove( \n"
+    "                  data, \n"
+    "                  NEW.path \n"
+    "              ) \n"
+    "              WHEN excluded.op = 'replace' THEN jsonb_replace( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  excluded.data \n"
+    "              ) \n"
+    "              WHEN excluded.op = '=' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  excluded.data \n"
+    "              ) \n"
+    "              WHEN excluded.op = '+' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) + jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '-' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) - jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '*' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) * jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '/' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) / jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '%%' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) %% jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '&' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) & jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '|' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) | jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "              WHEN excluded.op = '||' THEN jsonb_set( \n"
+    "                  data, \n"
+    "                  NEW.path, \n"
+    "                  jsonb(jsonb_extract(data, NEW.path) || jsonb_extract(excluded.data, '$')) \n"
+    "              ) \n"
+    "          END \n"
+    "        ), \n"
+    "        hlc = NEW.hlc \n"
+    "    WHERE hlc_compare(NEW.hlc, hlc) > 0; \n"
+    "END; \n"
+    " \n"
+    "CREATE TRIGGER IF NOT EXISTS %s_delete \n"
+    "INSTEAD OF DELETE ON %s \n"
+    "BEGIN \n"
+    "    INSERT INTO crdt_changes \n"
+    "    (pk, tbl, data, op, path, hlc) \n"
+    "    VALUES \n"
+    "    ( \n"
+    "        OLD.id, \n"
+    "        '%s', \n"
+    "        NULL, \n"
+    "        '=', \n"
+    "        '$', \n"
+    "        hlc_now('%s') \n"
+    "    ); \n"
+    "    DELETE FROM %s_records \n"
+    "    WHERE id = OLD.id; \n"
+    "END;";
 
-    char trigger_insert_sql[2048];
-    snprintf(trigger_insert_sql, sizeof(trigger_insert_sql),
-        "CREATE TRIGGER IF NOT EXISTS %s_insert_trigger INSTEAD OF INSERT ON %s FOR EACH ROW BEGIN "
-        "INSERT INTO crdt_changes (pk, tbl, data, op, path, hlc) VALUES (NEW.id, '%s', jsonb(NEW.data), IFNULL(NEW.op, '='), IFNULL(NEW.path, '$'), hlc_now('%s')); END;",
-        tbl, tbl, tbl, node_id);
+    char sql[sizeof(table_sql) + 512];
+    
+    snprintf(sql, sizeof(sql), table_sql, tbl, node_id, tbl, tbl, tbl, tbl, tbl, tbl, tbl, tbl, tbl, tbl, tbl, tbl, tbl, node_id, tbl);
 
-    char trigger_update_sql[2048];
-    snprintf(trigger_update_sql, sizeof(trigger_update_sql),
-        "CREATE TRIGGER IF NOT EXISTS %s_update_trigger INSTEAD OF UPDATE ON %s FOR EACH ROW BEGIN "
-        "INSERT INTO crdt_changes (pk, tbl, data, op, path, hlc) VALUES (NEW.id, '%s', jsonb(NEW.data), IFNULL(NEW.op, 'patch'), IFNULL(NEW.path, '$'), hlc_now('%s')); END;",
-        tbl, tbl, tbl, node_id);
-
-    char trigger_delete_sql[2048];
-    snprintf(trigger_delete_sql, sizeof(trigger_delete_sql),
-        "CREATE TRIGGER IF NOT EXISTS %s_delete_trigger INSTEAD OF DELETE ON %s FOR EACH ROW BEGIN "
-        "INSERT INTO crdt_changes (pk, tbl, data, op, path, hlc) VALUES (OLD.id, '%s', NULL, '=', '$', hlc_now('%s')); END;",
-        tbl, tbl, tbl, node_id);
+    //
+    printf("%s\n", sql);
 
     sqlite3 *db = sqlite3_context_db_handle(context);
     char *err_msg = NULL;
 
-    if (sqlite3_exec(db, view_sql, NULL, NULL, &err_msg) != SQLITE_OK) {
+    if (sqlite3_exec(db, sql, NULL, NULL, &err_msg) != SQLITE_OK) {
         sqlite3_result_error(context, err_msg, -1);
         sqlite3_free(err_msg);
         return;
     }
-
-    if (sqlite3_exec(db, trigger_insert_sql, NULL, NULL, &err_msg) != SQLITE_OK) {
-        sqlite3_result_error(context, err_msg, -1);
-        sqlite3_free(err_msg);
-        return;
-    }
-    if (sqlite3_exec(db, trigger_update_sql, NULL, NULL, &err_msg) != SQLITE_OK) {
-        sqlite3_result_error(context, err_msg, -1);
-        sqlite3_free(err_msg);
-        return;
-    }
-    if (sqlite3_exec(db, trigger_delete_sql, NULL, NULL, &err_msg) != SQLITE_OK) {
-        sqlite3_result_error(context, err_msg, -1);
-        sqlite3_free(err_msg);
-        return;
-    }
-
+    
     sqlite3_result_int(context, 0);
 }
 
