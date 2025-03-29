@@ -43,6 +43,12 @@ SELECT hlc_now(uuid());
 
 ### CRDT
 
+Initializes the CRDT tables.
+
+```sql
+SELECT crdt_create(uuid());
+```
+
 Create a new crdt table.
 
 ```sql
@@ -81,10 +87,10 @@ To delete the core crdt tables you need to call `crdt_remove`. You will need to 
 SELECT crdt_remove();
 ```
 
-To call the setup again you will need to call `crdt_init`. This is need to create the core tables again.
+To call the setup again you will need to call `crdt_create`. This is need to create the core tables again.
 
 ```sql
-SELECT crdt_init();
+SELECT crdt_create(uuid());
 ```
 
     If the data is NULL it is considered a tombstone and will be removed from the CRDT.

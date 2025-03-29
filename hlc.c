@@ -67,7 +67,7 @@ static int64_t getCurrentUtcMillis() {
 #include <stddef.h>
 #endif
 
-static int64_t tmToUtcMillis(struct tm *tm) {
+static int64_t tmToUtcMillis(struct tm *tm, long millis) {
     time_t t = mktime(tm);
     if (t == -1) {
         return -1; // Indicate error
@@ -82,30 +82,46 @@ static int64_t tmToUtcMillis(struct tm *tm) {
     ULARGE_INTEGER uli;
     uli.LowPart = ft.dwLowDateTime;
     uli.HighPart = ft.dwHighDateTime;
-    return (int64_t)(uli.QuadPart / 10000) - 11644473600000LL;
+    return (int64_t)(uli.QuadPart / 10000) - 11644473600000LL + millis;
 #else
     // For POSIX systems, mktime uses local time, so we need to convert to UTC.
     time_t utc_t = timegm(tm);
     if (utc_t == -1) {
         return -1;
     }
-    return (int64_t)utc_t * 1000;
+    return (int64_t)utc_t * 1000 + millis;
 #endif
 }
 
 // Helper function to convert ISO 8601 string to UTC milliseconds since epoch
 static int64_t iso8601ToUtcMillis(const char *iso8601) {
     struct tm tm;
-    if (strptime(iso8601, "%Y-%m-%dT%H:%M:%S", &tm) == NULL &&
-        strptime(iso8601, "%Y-%m-%dT%H:%M:%S%z", &tm) == NULL &&
-        strptime(iso8601, "%Y-%m-%dT%H:%M:%S.%fZ", &tm) == NULL) {
-        return -1;
+    long millis = 0;
+    char* dotPtr = strchr(iso8601, '.');
+    if(dotPtr != NULL){
+        if (strptime(iso8601, "%Y-%m-%dT%H:%M:%S.%fZ", &tm) == NULL){
+            if(strptime(iso8601, "%Y-%m-%dT%H:%M:%S.%f%z", &tm) == NULL){
+                if(strptime(iso8601, "%Y-%m-%dT%H:%M:%S.%f", &tm) == NULL){
+                    return -1;
+                }
+            }
+        }
+        char millisStr[4];
+        strncpy(millisStr, dotPtr + 1, 3);
+        millisStr[3] = '\0';
+        millis = strtol(millisStr, NULL, 10);
+    } else {
+        if (strptime(iso8601, "%Y-%m-%dT%H:%M:%S", &tm) == NULL &&
+            strptime(iso8601, "%Y-%m-%dT%H:%M:%S%z", &tm) == NULL) {
+            return -1;
+        }
     }
+
     // Assume UTC if no timezone information is provided
     if (iso8601[strlen(iso8601) - 1] != 'Z' && strchr(iso8601, '+') == NULL && strchr(iso8601, '-') == NULL) {
         tm.tm_isdst = 0; // Indicate that DST is not known, force UTC interpretation
     }
-    return tmToUtcMillis(&tm);
+    return tmToUtcMillis(&tm, millis);
 }
 
 // Constructor: Hlc(DateTime dateTime, int counter, String nodeId)
@@ -136,7 +152,7 @@ static Hlc* hlc_zero(const char* nodeId) {
     epoch_tm.tm_sec = 0;          // Second (0-59)
     epoch_tm.tm_isdst = 0;        // Not in DST
 
-    int64_t epochMillis = tmToUtcMillis(&epoch_tm);
+    int64_t epochMillis = tmToUtcMillis(&epoch_tm, 0);
     if (epochMillis == -1) {
         return NULL; // Error converting time
     }
@@ -183,6 +199,12 @@ static Hlc* hlc_parse(const char* timestamp) {
     strncpy(dateTimeStr, timestamp, dateTimeLen);
     dateTimeStr[dateTimeLen] = '\0';
 
+    // Handle milliseconds
+    char* dotPtr = strchr(dateTimeStr, '.');
+    if (dotPtr != NULL) {
+        *dotPtr = '\0'; // Truncate dateTimeStr at the dot
+    }
+
     char* counterStr = (char*)malloc(nodeIdDash - counterDash);
     if (counterStr == NULL) {
         free(dateTimeStr);
@@ -198,6 +220,15 @@ static Hlc* hlc_parse(const char* timestamp) {
         free(dateTimeStr);
         free(counterStr);
         return NULL;
+    }
+
+    // Add milliseconds back if they were present
+    if (dotPtr != NULL) {
+        char millisStr[4];
+        strncpy(millisStr, dotPtr + 1, 3);
+        millisStr[3] = '\0';
+        long millis = strtol(millisStr, NULL, 10);
+        dateTime += millis;
     }
 
     unsigned long counter_ul = strtoul(counterStr, NULL, 16);
@@ -249,13 +280,24 @@ static Hlc* hlc_increment(const Hlc* hlc, int64_t wallTimeMillis) {
     if (hlc == NULL) {
         return NULL;
     }
-    int64_t currentWallTime = (wallTimeMillis != -1) ? wallTimeMillis : getCurrentUtcMillis();
-    int64_t dateTimeNew = (currentWallTime > hlc->dateTime) ? currentWallTime : hlc->dateTime;
-    unsigned short counterNew = (dateTimeNew == hlc->dateTime) ? hlc->counter + 1 : 0;
+    // int64_t currentWallTime = (wallTimeMillis != -1) ? wallTimeMillis : getCurrentUtcMillis();
+    // int64_t dateTimeNew = (currentWallTime > hlc->dateTime) ? currentWallTime : hlc->dateTime;
+    unsigned short counterNew = hlc->counter + 1;
+ 
+    // if (currentWallTime > hlc->dateTime) {
+    //     dateTimeNew = currentWallTime;
+    //     counterNew = 0;
+    // } else if (currentWallTime == hlc->dateTime) {
+    //     dateTimeNew = hlc->dateTime;
+    //     counterNew = hlc->counter + 1;
+    // } else {
+    //     dateTimeNew = hlc->dateTime;
+    //     counterNew = hlc->counter + 1;
+    // }
 
-    if (dateTimeNew - currentWallTime > MAX_DRIFT) {
-        return NULL; // Clock drift
-    }
+    // if (dateTimeNew - currentWallTime > MAX_DRIFT) {
+    //     return NULL; // Clock drift
+    // }
     if (counterNew > MAX_COUNTER) {
         return NULL; // Overflow
     }
@@ -264,7 +306,7 @@ static Hlc* hlc_increment(const Hlc* hlc, int64_t wallTimeMillis) {
     if (newHlc == NULL) {
         return NULL;
     }
-    newHlc->dateTime = dateTimeNew;
+    newHlc->dateTime = hlc->dateTime;
     newHlc->counter = counterNew;
     strncpy(newHlc->nodeId, hlc->nodeId, MAX_NODE_ID_LENGTH - 1);
     newHlc->nodeId[MAX_NODE_ID_LENGTH - 1] = '\0';
@@ -328,12 +370,12 @@ static char* hlc_str(const Hlc* hlc) {
     char counterStr[5];
     snprintf(counterStr, sizeof(counterStr), "%04X", hlc->counter);
 
-    size_t bufferSize = strlen(dateTimeStr) + 1 + 4 + 1 + strlen(hlc->nodeId) + 1;
+    size_t bufferSize = strlen(dateTimeStr) + 4 + 1 + 4 + 1 + strlen(hlc->nodeId) + 1;
     char* result = (char*)malloc(bufferSize);
     if (result == NULL) {
         return NULL;
     }
-    snprintf(result, bufferSize, "%s-%s-%s", dateTimeStr, counterStr, hlc->nodeId);
+    snprintf(result, bufferSize, "%s.%03lld-%s-%s", dateTimeStr, hlc->dateTime % 1000, counterStr, hlc->nodeId);
     return result;
 }
 
@@ -458,7 +500,6 @@ static void sqlite_hlc_increment(sqlite3_context *context, int argc, sqlite3_val
         sqlite3_result_error(context, "hlc_increment without argument needs the context of the current node ID, which is not yet implemented in this example.", -1);
         return;
     }
-
     Hlc* incrementedHlc = hlc_increment(hlc, -1);
     hlc_free(hlc);
     if (incrementedHlc == NULL) {
