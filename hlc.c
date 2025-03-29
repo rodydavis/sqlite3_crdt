@@ -447,11 +447,46 @@ static void sqlite_hlc_node_id(sqlite3_context *context, int argc, sqlite3_value
     strncpy(nodeIdStr, hlc->nodeId, MAX_NODE_ID_LENGTH - 1);
     nodeIdStr[MAX_NODE_ID_LENGTH - 1] = '\0';
 
-    //  char* hlcStr = hlc_str(hlc);
-    // hlc_free(hlc);
-    // char* nodeIdStr = hlcStr;
-    // hlc_free(hlc);
     sqlite3_result_text(context, nodeIdStr, -1, SQLITE_STATIC);
+    hlc_free(hlc);
+}
+
+static void sqlite_hlc_counter(sqlite3_context *context, int argc, sqlite3_value **argv) { 
+    if (argc != 1) {
+        sqlite3_result_error(context, "hlc_counter requires exactly one argument (hlc_text)", -1);
+        return;
+    }
+    const unsigned char *hlcText = sqlite3_value_text(argv[0]);
+    if (hlcText == NULL) {
+        sqlite3_result_error(context, "hlc_text argument must be a text value", -1);
+        return;
+    }
+    Hlc* hlc = hlc_parse((const char*)hlcText);
+    if (hlc == NULL) {
+        sqlite3_result_error(context, "Invalid HLC text provided", -1);
+        return;
+    }
+    sqlite3_result_int(context, hlc->counter);
+    hlc_free(hlc);
+}
+
+static void sqlite_hlc_date_time(sqlite3_context *context, int argc, sqlite3_value **argv) { 
+    if (argc != 1) {
+        sqlite3_result_error(context, "hlc_date_time requires exactly one argument (hlc_text)", -1);
+        return;
+    }
+    const unsigned char *hlcText = sqlite3_value_text(argv[0]);
+    if (hlcText == NULL) {
+        sqlite3_result_error(context, "hlc_text argument must be a text value", -1);
+        return;
+    }
+    Hlc* hlc = hlc_parse((const char*)hlcText);
+    if (hlc == NULL) {
+        sqlite3_result_error(context, "Invalid HLC text provided", -1);
+        return;
+    }
+    sqlite3_result_int64(context, hlc->dateTime);
+    hlc_free(hlc);
 }
 
 static void sqlite_hlc_parse(sqlite3_context *context, int argc, sqlite3_value **argv) {
@@ -617,6 +652,12 @@ int sqlite3_hlc_init(
     if (rc != SQLITE_OK) return rc;
 
     rc = sqlite3_create_function(db, "hlc_node_id", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, NULL, sqlite_hlc_node_id, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_create_function(db, "hlc_counter", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, NULL, sqlite_hlc_counter, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_create_function(db, "hlc_date_time", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, NULL, sqlite_hlc_date_time, NULL, NULL);
     if (rc != SQLITE_OK) return rc;
    
     rc = sqlite3_create_function(db, "hlc_parse", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC | SQLITE_INNOCUOUS, NULL, sqlite_hlc_parse, NULL, NULL);
