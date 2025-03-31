@@ -26,13 +26,17 @@
 **     hlc_compare(hlc_text1 TEXT, hlc_text2 TEXT) -> INT
 */
 
+#define _XOPEN_SOURCE 700
+
 #include <sqlite3ext.h>
 SQLITE_EXTENSION_INIT1
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
 #include <sys/time.h>
 #include <inttypes.h>
 #include <errno.h>
@@ -85,10 +89,30 @@ static int64_t tmToUtcMillis(struct tm *tm, long millis) {
     return (int64_t)(uli.QuadPart / 10000) - 11644473600000LL + millis;
 #else
     // For POSIX systems, mktime uses local time, so we need to convert to UTC.
-    time_t utc_t = timegm(tm);
+    // Use timegm replacement.
+
+    time_t utc_t;
+    struct tm temp_tm = *tm;
+    temp_tm.tm_isdst = 0; // Force to calculate UTC without DST.
+
+    utc_t = mktime(&temp_tm);
     if (utc_t == -1) {
         return -1;
     }
+
+    //Calculate the difference between local time and UTC
+    time_t local_t = mktime(tm);
+    if (local_t == -1) {
+        return -1;
+    }
+
+    long int diff = (long int)(utc_t - local_t);
+
+    if (diff > INT_MAX || diff < INT_MIN) {
+      return -1; // diff out of range.
+    }
+
+    utc_t = local_t - (time_t)diff;
     return (int64_t)utc_t * 1000 + millis;
 #endif
 }
